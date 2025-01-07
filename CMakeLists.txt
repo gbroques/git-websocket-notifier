@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.15)
 project(git-websocket-notifier CXX)
 set(CMAKE_CXX_STANDARD 17)
 
-find_package(efsw)
-find_package(simple-websocket-server)
+find_package(efsw REQUIRED)
+find_package(simple-websocket-server REQUIRED)
 find_package(Boost REQUIRED)
 find_package(libgit2 REQUIRED)
 
