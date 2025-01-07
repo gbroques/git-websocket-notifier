@@ -113,10 +113,21 @@ std::vector<graph::edge> get_edges(graph::node node) {
   if (node.type == "commit") {
     // Commit contents start with the following:
     // tree dfea9995ef759d90b879ce623ec9b26f2a781e0c
+    //
+    // And it'll have a parent commit if not the root-commit:
+    // parent 96b5e3f3aaadc5e1e6d6e1510c32c8666db98b51
     // Assume 40-character SHA1 hashes
-    std::string treeId = node.content.substr(5, 45);
+    std::string treeId = node.content.substr(5, 40);
+    
     graph::edge edge({node.id + treeId, node.id, treeId});
     edges.push_back(edge);
+
+    std::string potentialParent = node.content.substr(46, 6);
+    if (potentialParent == "parent") {
+      std::string parentId = node.content.substr(53, 40);
+      graph::edge edge({node.id + parentId, node.id, parentId});
+      edges.push_back(edge);
+    }
   }
   if (node.type == "tree") {
     // Tree contents are the following:
