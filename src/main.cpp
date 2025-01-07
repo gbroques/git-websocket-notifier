@@ -150,18 +150,22 @@ struct args {
   git_repository* repo;
   git_odb* odb;
   std::shared_ptr<WsClient::Connection> connection;
+  boost::json::array* elements;
 };
 
-int send_object(const git_oid* oid, void* payload) {
+int build_graph(const git_oid* oid, void* payload) {
   args* args_pointer = (args*) payload;
   git_repository* repo = args_pointer->repo;
   git_odb* odb = args_pointer->odb;
+  boost::json::array* elements = args_pointer->elements;
   std::shared_ptr<WsClient::Connection> connection = args_pointer->connection;
   graph::node node = get_node(repo, odb, oid);
-  connection->send(boost::json::serialize(boost::json::value_from(node)));
+
+  elements->push_back(boost::json::value_from(node));
   std::vector<graph::edge> edges = get_edges(node);
   for (graph::edge edge : edges) {
-    connection->send(boost::json::serialize(boost::json::value_from(edge)));
+    // TODO: Only send edges if they exist
+    elements->push_back(boost::json::value_from(edge));
   }
   // Return 0 to continue iterating.
   return 0;
@@ -182,14 +186,17 @@ class UpdateListener : public efsw::FileWatchListener {
       connection = _connection;
 
       // Read all existing objects in the object database
-      args payload = {repo, odb, connection};
-      if (git_odb_foreach(odb, send_object, &payload) != 0) {
+      boost::json::array elements = {};
+      args payload = {repo, odb, connection, &elements};
+      if (git_odb_foreach(odb, build_graph, &payload) != 0) {
         std::cerr << "Failed to iterate over object database: " << git_error_last()->message << std::endl;
         git_odb_free(odb);
         git_repository_free(repo);
         git_libgit2_shutdown();
         exit(1);
       }
+      std::cout << "Sending to WebSocket" << std::endl;
+      connection->send(boost::json::serialize(elements));
     }
 
     void handleFileAction(efsw::WatchID watchid, const std::string& dir,
