@@ -1,3 +1,4 @@
+#include <ostream>
 #include <stdio.h>
 #include <filesystem>
 #include <vector>
@@ -32,9 +33,39 @@ bool is_hexadecimal(const std::string& str) {
   return true;
 }
 
+
+std::string map_object_type_to_node_type(std::string type) {
+  if (type == "commit") {
+    return "ellipse";
+  } else if (type == "tree") {
+    return "round-triangle";
+  } else if (type == "blob") {
+    return "round-rectangle";
+  } else if (type == "tag") {
+    return "round-tag";
+  } else {
+    return "ellipse";
+  }
+}
+
+std::string map_object_type_to_color(std::string type) {
+  if (type == "commit") {
+    return "green";
+  } else if (type == "tree") {
+    return "blue";
+  } else if (type == "blob") {
+    return "red";
+  } else if (type == "tag") {
+    return "gray";
+  } else {
+    return "green";
+  }
+}
+
 namespace graph {
   struct node {
     std::string id;
+    std::string shortId;
     std::string type;
     size_t size;
     std::string content;
@@ -46,17 +77,30 @@ namespace graph {
   };
   void tag_invoke(boost::json::value_from_tag, boost::json::value& jv, node const& n) {
     jv = {
-      {"id" , n.id},
-      {"type", n.type},
-      {"size", n.size},
-      {"content", n.content}
+      {
+        "data",
+        {
+          {"id" , n.id},
+          {"shortId" , n.shortId},
+          {"type", map_object_type_to_node_type(n.type)},
+          {"color", map_object_type_to_color(n.type)},
+          {"objectType", n.type},
+          {"size", n.size},
+          {"content", n.content}
+        },
+      },
     };
   }
   void tag_invoke(boost::json::value_from_tag, boost::json::value& jv, edge const& e) {
     jv = {
-      {"id" , e.id},
-      {"source", e.source},
-      {"target", e.target},
+      {
+        "data",
+        {
+          {"id" , e.id},
+          {"source", e.source},
+          {"target", e.target}
+        }
+      }
     };
   }
 }
@@ -77,15 +121,20 @@ graph::node get_node(git_repository* repo, git_odb* odb, const git_oid* oid) {
 
   const char* content = (char*) git_odb_object_data(object);
   std::string string_content(content);
+
+
+  git_object* obj = nullptr;
+  if (git_object_lookup(&obj, repo, oid, object_type) < 0) {
+    std::cerr << "Failed to lookup object: " << git_error_last()->message << std::endl;
+    git_odb_free(odb);
+    git_repository_free(repo);
+    git_libgit2_shutdown();
+    exit(1);
+  }
+  
   // Lookup tree for content
   if (type == "tree") {
-    git_tree* tree = nullptr;
-    if (git_tree_lookup(&tree, repo, oid) < 0) {
-      std::cerr << "Failed to lookup tree: " << git_error_last()->message << std::endl;
-      git_odb_free(odb);
-      git_repository_free(repo);
-      exit(1);
-    }
+    git_tree* tree = (git_tree*) obj;
     const git_tree_entry *entry;
     size_t i, count;
     string_content = "";
@@ -103,7 +152,20 @@ graph::node get_node(git_repository* repo, git_odb* odb, const git_oid* oid) {
   }
 
   std::cout << id.substr(0, 10) << " " << std::setw(6) << type << " " << size << std::endl;
-  graph::node node({id, type, size, string_content});
+  
+	git_buf short_id = {0};
+  if (git_object_short_id(&short_id, obj) < 0) {
+    std::cerr << "Error getting short commit ID." << std::endl;
+    git_object_free(obj);
+    git_odb_free(odb);
+    git_repository_free(repo);
+    git_libgit2_shutdown();
+    exit(1);
+  }
+  std::string shortId(short_id.ptr);
+  graph::node node({id, shortId, type, size, string_content});
+  git_buf_dispose(&short_id);
+  git_object_free(obj);
   git_odb_object_free(object);
   return node;
 }
