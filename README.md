@@ -78,3 +78,13 @@ For testing purposes, a basic WebSocket server written in Node.js has been inclu
 3. Start WebSocket server on port 8080:
 
        npm start
+
+## clangd Language Server Setup
+
+To use [`clangd`](https://clangd.llvm.org/) as a language server, a [`compile_commands.json`](https://clangd.llvm.org/installation.html#compile_commandsjson) file must be generated.
+
+To generate one, run the following commands after the project is built:
+
+    cd build/
+    cmake . -DCMAKE_EXPORT_COMPILE_COMMANDS=1
+
