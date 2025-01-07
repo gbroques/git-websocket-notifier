@@ -32,17 +32,6 @@ bool is_hexadecimal(const std::string& str) {
   return true;
 }
 
-std::string get_type(git_odb_object* object) {
-  unsigned int object_type = git_odb_object_type(object);
-  switch (object_type) {
-    case GIT_OBJ_COMMIT: return "commit";
-    case GIT_OBJ_TREE: return "tree";
-    case GIT_OBJ_BLOB: return "blob";
-    case GIT_OBJ_TAG: return "tag";
-    default: return "unknown";
-  }
-}
-
 boost::json::object get_object(git_odb* odb, const git_oid* oid) {
   git_odb_object* object = nullptr;
   int error = git_odb_read(&object, odb, oid);
@@ -51,7 +40,8 @@ boost::json::object get_object(git_odb* odb, const git_oid* oid) {
     std::cerr << "Error reading object with OID " << id << std::endl;
     return 1;
   }
-  std::string type = get_type(object);
+  git_object_t object_type = git_odb_object_type(object);
+  const char* type = git_object_type2string(object_type);
   size_t size = git_odb_object_size(object);
   const char* content = (const char*) git_odb_object_data(object);
   std::cout << id.substr(0, 10) << " " << std::setw(6) << type << " " << size << std::endl;
