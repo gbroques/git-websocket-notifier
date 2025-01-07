@@ -32,27 +32,65 @@ bool is_hexadecimal(const std::string& str) {
   return true;
 }
 
-boost::json::object get_object(git_odb* odb, const git_oid* oid) {
+namespace graph {
+  struct node {
+    std::string id;
+    std::string type;
+    size_t size;
+    std::string content;
+  };
+  struct edge {
+    std::string id;
+    std::string source;
+    std::string target;
+  };
+  void tag_invoke(boost::json::value_from_tag, boost::json::value& jv, node const& n) {
+    jv = {
+      {"id" , n.id},
+      {"type", n.type},
+      {"size", n.size},
+      {"content", n.content}
+    };
+  }
+  void tag_invoke(boost::json::value_from_tag, boost::json::value& jv, edge const& e) {
+    jv = {
+      {"id" , e.id},
+      {"source", e.source},
+      {"target", e.target},
+    };
+  }
+}
+
+graph::node get_node(git_odb* odb, const git_oid* oid) {
   git_odb_object* object = nullptr;
   int error = git_odb_read(&object, odb, oid);
   std::string id = git_oid_tostr_s(oid);
   if (error < 0) {
     std::cerr << "Error reading object with OID " << id << std::endl;
-    return 1;
+    exit(1);
   }
   git_object_t object_type = git_odb_object_type(object);
   const char* type = git_object_type2string(object_type);
   size_t size = git_odb_object_size(object);
   const char* content = (const char*) git_odb_object_data(object);
+  std::string string_content(content);
   std::cout << id.substr(0, 10) << " " << std::setw(6) << type << " " << size << std::endl;
-  boost::json::object obj({
-    {"id", id},
-    {"type", type},
-    {"size", size},
-    {"content", content}
-  });
+  graph::node node({id, type, size, content});
   git_odb_object_free(object);
-  return obj;
+  return node;
+}
+
+std::vector<graph::edge> get_edges(graph::node node) {
+  std::vector<graph::edge> edges = {};
+  if (node.type == "commit") {
+    // Commit contents start with the following:
+    // tree dfea9995ef759d90b879ce623ec9b26f2a781e0c
+    // Assume 40-character SHA1 hashes
+    std::string treeId = node.content.substr(5, 45);
+    graph::edge edge({node.id + treeId, node.id, treeId});
+    edges.push_back(edge);
+  }
+  return edges;
 }
 
 struct args {
@@ -64,9 +102,12 @@ int send_object(const git_oid* oid, void* payload) {
   args* args_pointer = (args*) payload;
   git_odb* odb = args_pointer->odb;
   std::shared_ptr<WsClient::Connection> connection = args_pointer->connection;
-  boost::json::object obj = get_object(odb, oid);
-  std::string json = boost::json::serialize(obj);
-  connection->send(json);
+  graph::node node = get_node(odb, oid);
+  connection->send(boost::json::serialize(boost::json::value_from(node)));
+  std::vector<graph::edge> edges = get_edges(node);
+  for (graph::edge edge : edges) {
+    connection->send(boost::json::serialize(boost::json::value_from(edge)));
+  }
   // Return 0 to continue iterating.
   return 0;
 }
@@ -108,6 +149,7 @@ class UpdateListener : public efsw::FileWatchListener {
       std::cout << std::endl;
 
       // Handle git object files
+      // Assume 40-character SHA1 hashes
       if (filename.size() == 38 && is_hexadecimal(filename)) {
         std::string last_two_chars_excluding_trailing_slash = dir.substr(dir.size() - 3, 2);
         std::string sha1 = last_two_chars_excluding_trailing_slash + filename;
@@ -117,8 +159,8 @@ class UpdateListener : public efsw::FileWatchListener {
           std::cerr << "Failed to convert " << sha1 << " to git_oid!" << std::endl;
           return;
         }
-        boost::json::object obj = get_object(odb, &oid);
-        connection->send(boost::json::serialize(obj));
+        graph::node node = get_node(odb, &oid);
+        connection->send(boost::json::serialize(boost::json::value_from(node)));
       }
     }
 };
