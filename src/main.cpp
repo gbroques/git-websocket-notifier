@@ -138,7 +138,6 @@ std::vector<graph::edge> get_edges(graph::node node) {
     std::string line;
 
     while (std::getline(stream, line)) {
-      std::cout << line << std::endl;
       std::string target = line.substr(12, 40);
       graph::edge edge({node.id + target, node.id, target});
       edges.push_back(edge);
