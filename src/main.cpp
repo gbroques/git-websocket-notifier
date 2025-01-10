@@ -1,3 +1,4 @@
+#include <iostream>
 #include <ostream>
 #include <stdio.h>
 #include <filesystem>
@@ -289,10 +290,50 @@ class UpdateListener : public efsw::FileWatchListener {
     }
 };
 
+
+struct treewalk_args {
+  git_repository* repo;
+};
+
+// Callback function to be called for each entry in the tree
+int treewalk_callback(const char *path, const git_tree_entry *entry, void *payload) {
+  args* args_pointer = (args*) payload;
+  git_repository* repo = args_pointer->repo;
+  const git_oid* oid = git_tree_entry_id(entry);
+  std::string oid_str = git_oid_tostr_s(oid);
+  git_object_t entry_type = git_tree_entry_type(entry);
+  const char* type = git_object_type2string(entry_type);
+  const char* name = git_tree_entry_name(entry);
+
+  
+  git_object* obj = nullptr;
+  if (git_object_lookup(&obj, repo, oid, entry_type) < 0) {
+    std::cerr << "Failed to lookup object: " << git_error_last()->message << std::endl;
+    git_repository_free(repo);
+    git_libgit2_shutdown();
+    exit(1);
+  }
+
+	git_buf short_id_buf = {0};
+  if (git_object_short_id(&short_id_buf, obj) < 0) {
+    std::cerr << "Error getting short ID." << std::endl;
+    return 1; // Stop the walk
+  }
+  std::string short_id(short_id_buf.ptr);
+  
+  std::cout << path << " -> " << name << " " << type << " " << short_id << std::endl;
+
+  git_buf_dispose(&short_id_buf);
+  git_object_free(obj);
+
+  // Returning 0 to continue walking through the tree
+  return 0;
+}
+
 int main(int argc, char* argv[]) {
-  if (argc > 2) {
+  if (argc > 1) {
     std::filesystem::path repo_path(argv[1]);
-    std::string websocket_host_port_path = argv[2];
+    // std::string websocket_host_port_path = argv[2];
 
     // Initialize libgit2
     if (git_libgit2_init() < 0) {
@@ -310,56 +351,223 @@ int main(int argc, char* argv[]) {
       return 1;
     }
 
-    // Open object database.
-    git_odb* odb = nullptr;
-    std::string objects_dir = repo_path / ".git" / "objects";
-    if (git_odb_open(&odb, objects_dir.c_str()) != 0) {
-      std::cerr << "Failed to open object database: " << git_error_last()->message << std::endl;
+    
+    // Create a new revwalk.
+    git_revwalk* walk = nullptr;
+    if (git_revwalk_new(&walk, repo) != 0) {
+      const git_error* e = git_error_last();
+      std::cerr << "Error creating new revwalk: " << e->message << std::endl;
       git_repository_free(repo);
       git_libgit2_shutdown();
       return 1;
     }
 
-    // WebSocket client code adapted from the following example:
-    // https://gitlab.com/eidheim/Simple-WebSocket-Server/-/blob/v2.0.2/ws_examples.cpp?ref_type=tags#L109-146
-    WsClient client(websocket_host_port_path);
+   // Set the starting point of the walk (typically HEAD)
+    git_oid head_oid;
+    if (git_reference_name_to_id(&head_oid, repo, "HEAD") != 0) {
+        std::cerr << "Failed to get HEAD OID!" << std::endl;
+        git_revwalk_free(walk);
+        git_repository_free(repo);
+        git_libgit2_shutdown();
+        return 1;
+    }
 
-    client.on_open = [&repo, &odb, &websocket_host_port_path, &objects_dir](std::shared_ptr<WsClient::Connection> connection) {
-      std::cout << "Connected to ws://" << websocket_host_port_path << std::endl;
-      efsw::FileWatcher* fileWatcher = new efsw::FileWatcher();
-      UpdateListener* listener = new UpdateListener(repo, odb, connection);
-      bool recursive = true;
-      efsw::WatchID watchID = fileWatcher->addWatch(objects_dir, listener, recursive);
-      if (watchID < 0) {
-        std::cout << "Error " << watchID << " watching directory " << objects_dir << std::endl;
-        std::cout << "See https://github.com/SpartanJ/efsw/blob/1.4.1/include/efsw/efsw.h#L76-L85 for error code." << std::endl;
+    // Push the starting commit onto the revwalk
+    if (git_revwalk_push(walk, &head_oid) != 0) {
+        std::cerr << "Failed to push to revwalk!" << std::endl;
+        git_revwalk_free(walk);
+        git_repository_free(repo);
+        git_libgit2_shutdown();
+        return 1;
+    }
+
+    // Walk the first N commits of the repository pointed to by head ref.
+    git_oid commit_id;
+    int number_of_commits = 4;
+    int i = 0;
+    while (i < number_of_commits && git_revwalk_next(&commit_id, walk) == 0) {
+      std::string commit_id_str = git_oid_tostr_s(&commit_id);
+
+      // Lookup git_commit
+      git_commit* commit = nullptr;
+      if (git_commit_lookup(&commit, repo, &commit_id) < 0) {
+        const git_error* e = git_error_last();
+        std::cerr << "Failed to lookup commit by id " << commit_id_str << " : " << e->message << std::endl;
+        git_revwalk_free(walk);
+        git_repository_free(repo);
+        git_libgit2_shutdown();
+        return 1;
+      }
+      
+      // Lookup git_object for commit to get short ID.
+      git_object* commit_obj = nullptr;
+      if (git_object_lookup(&commit_obj, repo, &commit_id, GIT_OBJECT_COMMIT) < 0) {
+        const git_error* e = git_error_last();
+        std::cerr << "Failed to lookup commit object: " << e->message << std::endl;
+        git_revwalk_free(walk);
+        git_repository_free(repo);
+        git_libgit2_shutdown();
+        return 1;
+      }
+
+      // Get commit short ID.
+      git_buf commit_short_id_buf = {0};
+      if (git_object_short_id(&commit_short_id_buf, commit_obj) < 0) {
+        std::cerr << "Error getting short commit ID." << std::endl;
+        git_repository_free(repo);
+        git_libgit2_shutdown();
+        return 1;
+      }
+      std::string commit_short_id(commit_short_id_buf.ptr);
+
+      // Lookup git_tree
+      git_tree* tree = nullptr;
+      if (git_commit_tree(&tree, commit) < 0) {
+        const git_error* e = git_error_last();
+        std::cerr << "Failed to get commit tree: " << e->message << std::endl;
+        git_commit_free(commit);
+        git_revwalk_free(walk);
+        git_repository_free(repo);
+        git_libgit2_shutdown();
+        return 1;
+      }
+
+      // Get tree ID and string representation.
+      const git_oid* tree_id = git_tree_id(tree);
+      std::string tree_id_str = git_oid_tostr_s(tree_id);
+
+      // Lookup git_object for tree to get short ID.
+      git_object* tree_obj = nullptr;
+      if (git_object_lookup(&tree_obj, repo, tree_id, GIT_OBJECT_TREE) < 0) {
+        const git_error* e = git_error_last();
+        std::cerr << "Failed to lookup tree object: " << e->message << std::endl;
+        git_revwalk_free(walk);
+        git_repository_free(repo);
+        git_libgit2_shutdown();
+        return 1;
+      }
+
+      // Get tree short ID.
+      git_buf tree_short_id_buf = {0};
+      if (git_object_short_id(&tree_short_id_buf, tree_obj) < 0) {
+        std::cerr << "Error getting short tree ID." << std::endl;
+        git_repository_free(repo);
+        git_libgit2_shutdown();
         exit(1);
       }
-      fileWatcher->watch(); // Non-blocking
-      std::cout << "[Watch #" << watchID  << "] Watching " + objects_dir + " for changes." << std::endl;
-    };
+      std::string tree_short_id(tree_short_id_buf.ptr);
+      
+      // Walk the tree in pre-order: from root to leaves.
+      std::cout << commit_short_id << " -> " << tree_short_id << std::endl;
+      args payload = {repo};
+      if (git_tree_walk(tree, GIT_TREEWALK_PRE, treewalk_callback, &payload) != 0) {
+          std::cerr << "Failed to walk the tree!" << std::endl;
+          git_tree_free(tree);
+          git_commit_free(commit);
+          git_repository_free(repo);
+          git_libgit2_shutdown();
+          return 1;
+      }
+      
+      git_buf_dispose(&tree_short_id_buf);
+      git_object_free(tree_obj);
+      git_tree_free(tree);
+      git_buf_dispose(&commit_short_id_buf);
+      git_object_free(commit_obj);
+      git_commit_free(commit);
+      i++;
+    }
 
-    client.on_close = [&websocket_host_port_path](std::shared_ptr<WsClient::Connection> /*connection*/, int status, const std::string & /*reason*/) {
-      std::cout << "Closed connection to ws://" << websocket_host_port_path << " with status code " << status << std::endl;
-    };
-
-    // See http://www.boost.org/doc/libs/1_55_0/doc/html/boost_asio/reference.html, Error Codes for error code meanings
-    client.on_error = [](std::shared_ptr<WsClient::Connection> /*connection*/, const SimpleWeb::error_code &ec) {
-      std::cout << "Error: " << ec << ", error message: " << ec.message() << std::endl;
-    };
-
-    std::cout << "Connecting to ws://" << websocket_host_port_path << std::endl;
-    client.start(); // Block until connection is closed or errors.
-
-    std::cout << "Freeing resources" << std::endl;
-    git_odb_free(odb);
+    // Rev walk first 3 commits.
+    // int number_of_commits = 3;
+    // int i = 0;
+    // git_oid* commit_id = nullptr;
+    // while(i < number_of_commits && git_revwalk_next(commit_id, walk) != GIT_ITEROVER) {
+      // std::string commit_id_str = git_oid_tostr_s(commit_id);
+      // git_commit* commit = nullptr;
+      // if (git_commit_lookup(&commit, repo, commit_id) < 0) {
+      //   const git_error* e = git_error_last();
+      //   std::cerr << "Failed to lookup commit: " << e->message << std::endl;
+      //   git_revwalk_free(walk);
+      //   git_repository_free(repo);
+      //   git_libgit2_shutdown();
+      //   return 1;
+      // }
+      //
+      // git_tree* tree = nullptr;
+      // if (git_commit_tree(&tree, commit) < 0) {
+      //   const git_error* e = git_error_last();
+      //   std::cerr << "Failed to get commit tree: " << e->message << std::endl;
+      //   git_commit_free(commit);
+      //   git_revwalk_free(walk);
+      //   git_repository_free(repo);
+      //   git_libgit2_shutdown();
+      //   return 1;
+      // }
+      // const git_oid* tree_id = git_tree_id(tree);
+      // std::string tree_id_str = git_oid_tostr_s(tree_id);
+      // std::cout << commit_id << " -> " << tree_id;
+      // git_commit_free(commit);
+      // git_tree_free(tree);
+    //   i++;
+    // }
+    
+    
+    git_revwalk_free(walk);
     git_repository_free(repo);
     git_libgit2_shutdown();
-  } else {
-    std::cout << "Usage: <repo_dir> <websocket_host_port_path>" << std::endl;
-    std::cout << "    repo_dir - git repository directory to recursively watch for changes" << std::endl;
-    std::cout << "    websocket_host_port_path - host, port and path of WebSocket server to write changes to." << std::endl;
-    std::cout << "    Example: ./my-repo localhost:8080" << std::endl;
+
+
+  //   // Open object database.
+  //   git_odb* odb = nullptr;
+  //   std::string objects_dir = repo_path / ".git" / "objects";
+  //   if (git_odb_open(&odb, objects_dir.c_str()) != 0) {
+  //     std::cerr << "Failed to open object database: " << git_error_last()->message << std::endl;
+  //     git_repository_free(repo);
+  //     git_libgit2_shutdown();
+  //     return 1;
+  //   }
+  //
+  //   // WebSocket client code adapted from the following example:
+  //   // https://gitlab.com/eidheim/Simple-WebSocket-Server/-/blob/v2.0.2/ws_examples.cpp?ref_type=tags#L109-146
+  //   WsClient client(websocket_host_port_path);
+  //
+  //   client.on_open = [&repo, &odb, &websocket_host_port_path, &objects_dir](std::shared_ptr<WsClient::Connection> connection) {
+  //     std::cout << "Connected to ws://" << websocket_host_port_path << std::endl;
+  //     efsw::FileWatcher* fileWatcher = new efsw::FileWatcher();
+  //     UpdateListener* listener = new UpdateListener(repo, odb, connection);
+  //     bool recursive = true;
+  //     efsw::WatchID watchID = fileWatcher->addWatch(objects_dir, listener, recursive);
+  //     if (watchID < 0) {
+  //       std::cout << "Error " << watchID << " watching directory " << objects_dir << std::endl;
+  //       std::cout << "See https://github.com/SpartanJ/efsw/blob/1.4.1/include/efsw/efsw.h#L76-L85 for error code." << std::endl;
+  //       exit(1);
+  //     }
+  //     fileWatcher->watch(); // Non-blocking
+  //     std::cout << "[Watch #" << watchID  << "] Watching " + objects_dir + " for changes." << std::endl;
+  //   };
+  //
+  //   client.on_close = [&websocket_host_port_path](std::shared_ptr<WsClient::Connection> /*connection*/, int status, const std::string & /*reason*/) {
+  //     std::cout << "Closed connection to ws://" << websocket_host_port_path << " with status code " << status << std::endl;
+  //   };
+  //
+  //   // See http://www.boost.org/doc/libs/1_55_0/doc/html/boost_asio/reference.html, Error Codes for error code meanings
+  //   client.on_error = [](std::shared_ptr<WsClient::Connection> /*connection*/, const SimpleWeb::error_code &ec) {
+  //     std::cout << "Error: " << ec << ", error message: " << ec.message() << std::endl;
+  //   };
+  //
+  //   std::cout << "Connecting to ws://" << websocket_host_port_path << std::endl;
+  //   client.start(); // Block until connection is closed or errors.
+  //
+  //   std::cout << "Freeing resources" << std::endl;
+  //   git_odb_free(odb);
+  //   git_repository_free(repo);
+  //   git_libgit2_shutdown();
+  // } else {
+  //   std::cout << "Usage: <repo_dir> <websocket_host_port_path>" << std::endl;
+  //   std::cout << "    repo_dir - git repository directory to recursively watch for changes" << std::endl;
+  //   std::cout << "    websocket_host_port_path - host, port and path of WebSocket server to write changes to." << std::endl;
+  //   std::cout << "    Example: ./my-repo localhost:8080" << std::endl;
   }
   
 }
