@@ -291,21 +291,34 @@ class UpdateListener : public efsw::FileWatchListener {
 };
 
 
+
 struct treewalk_args {
   git_repository* repo;
+  int depth;
 };
+
+int count_occurences(std::string string, char character) {
+  int count = 0;
+  for (int i = 0; i < string.size(); i++) {
+    if (string[i] == character) {
+      count++;
+    }
+  }
+  return count;
+}
 
 // Callback function to be called for each entry in the tree
 int treewalk_callback(const char *path, const git_tree_entry *entry, void *payload) {
-  args* args_pointer = (args*) payload;
+  treewalk_args* args_pointer = (treewalk_args*) payload;
   git_repository* repo = args_pointer->repo;
+  int starting_depth = args_pointer->depth;
+  int depth = starting_depth + count_occurences(path, std::filesystem::path::preferred_separator);
   const git_oid* oid = git_tree_entry_id(entry);
   std::string oid_str = git_oid_tostr_s(oid);
   git_object_t entry_type = git_tree_entry_type(entry);
   const char* type = git_object_type2string(entry_type);
   const char* name = git_tree_entry_name(entry);
 
-  
   git_object* obj = nullptr;
   if (git_object_lookup(&obj, repo, oid, entry_type) < 0) {
     std::cerr << "Failed to lookup object: " << git_error_last()->message << std::endl;
@@ -314,18 +327,18 @@ int treewalk_callback(const char *path, const git_tree_entry *entry, void *paylo
     exit(1);
   }
 
-	git_buf short_id_buf = {0};
+  git_buf short_id_buf = {0};
   if (git_object_short_id(&short_id_buf, obj) < 0) {
     std::cerr << "Error getting short ID." << std::endl;
     return 1; // Stop the walk
   }
   std::string short_id(short_id_buf.ptr);
   
-  std::cout << path << " -> " << name << " " << type << " " << short_id << std::endl;
+  std::string spaces(1 + (depth - 1) * 2, ' ');
+  std::cout << depth << spaces << name << " " << type << " " << short_id << std::endl;
 
   git_buf_dispose(&short_id_buf);
   git_object_free(obj);
-
   // Returning 0 to continue walking through the tree
   return 0;
 }
@@ -385,6 +398,7 @@ int main(int argc, char* argv[]) {
     git_oid commit_id;
     int number_of_commits = 4;
     int i = 0;
+    int depth = 1;
     while (i < number_of_commits && git_revwalk_next(&commit_id, walk) == 0) {
       std::string commit_id_str = git_oid_tostr_s(&commit_id);
 
@@ -419,6 +433,7 @@ int main(int argc, char* argv[]) {
         return 1;
       }
       std::string commit_short_id(commit_short_id_buf.ptr);
+      std::cout << depth << " commit " << commit_short_id << std::endl;
 
       // Lookup git_tree
       git_tree* tree = nullptr;
@@ -458,8 +473,8 @@ int main(int argc, char* argv[]) {
       std::string tree_short_id(tree_short_id_buf.ptr);
       
       // Walk the tree in pre-order: from root to leaves.
-      std::cout << commit_short_id << " -> " << tree_short_id << std::endl;
-      args payload = {repo};
+      std::cout << depth + 1 << "   tree " << tree_short_id << std::endl;
+      treewalk_args payload = {repo, depth + 2};
       if (git_tree_walk(tree, GIT_TREEWALK_PRE, treewalk_callback, &payload) != 0) {
           std::cerr << "Failed to walk the tree!" << std::endl;
           git_tree_free(tree);
@@ -478,41 +493,6 @@ int main(int argc, char* argv[]) {
       i++;
     }
 
-    // Rev walk first 3 commits.
-    // int number_of_commits = 3;
-    // int i = 0;
-    // git_oid* commit_id = nullptr;
-    // while(i < number_of_commits && git_revwalk_next(commit_id, walk) != GIT_ITEROVER) {
-      // std::string commit_id_str = git_oid_tostr_s(commit_id);
-      // git_commit* commit = nullptr;
-      // if (git_commit_lookup(&commit, repo, commit_id) < 0) {
-      //   const git_error* e = git_error_last();
-      //   std::cerr << "Failed to lookup commit: " << e->message << std::endl;
-      //   git_revwalk_free(walk);
-      //   git_repository_free(repo);
-      //   git_libgit2_shutdown();
-      //   return 1;
-      // }
-      //
-      // git_tree* tree = nullptr;
-      // if (git_commit_tree(&tree, commit) < 0) {
-      //   const git_error* e = git_error_last();
-      //   std::cerr << "Failed to get commit tree: " << e->message << std::endl;
-      //   git_commit_free(commit);
-      //   git_revwalk_free(walk);
-      //   git_repository_free(repo);
-      //   git_libgit2_shutdown();
-      //   return 1;
-      // }
-      // const git_oid* tree_id = git_tree_id(tree);
-      // std::string tree_id_str = git_oid_tostr_s(tree_id);
-      // std::cout << commit_id << " -> " << tree_id;
-      // git_commit_free(commit);
-      // git_tree_free(tree);
-    //   i++;
-    // }
-    
-    
     git_revwalk_free(walk);
     git_repository_free(repo);
     git_libgit2_shutdown();
